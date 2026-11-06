@@ -25,11 +25,14 @@ window.Slackify = window.Slackify || {};
       const rawComments = commentsEl ? commentsEl.innerText : '0';
       const commentCount = parseInt(rawComments.replace(/\D/g, ''), 10) || 0;
       
+      const cleanId = id.replace(/^t3_/, '');
+      const rawUrl = titleEl.getAttribute('href') || el.getAttribute('data-url') || '';
+      
       items.push({
-        id: id.replace(/^t3_/, ''),
+        id: cleanId,
         author: authorEl ? authorEl.innerText : '[unknown]',
         title: titleEl.innerText,
-        url: titleEl.getAttribute('href') || '',
+        url: rawUrl,
         num_comments: commentCount,
         over_18: el.classList.contains('over18'),
         selftext: ''
@@ -73,20 +76,12 @@ window.Slackify = window.Slackify || {};
 
       let txt = p.selftext ? p.selftext.substring(0, 300) + (p.selftext.length > 300 ? '...' : '') : '';
       
-      /* Robust Media & Video Stream Detection */
-      let mUrl = p.url || '', mType = null, vidSrc = '';
+      /* Media classification */
+      let mUrl = p.url || '', mType = null;
       if(mUrl.match(/\.(jpeg|jpg|gif|png|webp)$/i) || mUrl.includes('i.redd.it') || (mUrl.includes('imgur.com') && !mUrl.match(/\.(mp4|gifv|webm)$/i))){
         mType = 'img';
-      } else if(mUrl.match(/\.(mp4|webm|gifv)$/i) || mUrl.includes('v.redd.it') || mUrl.includes('redgifs.com') || mUrl.includes('gfycat.com')){
+      } else if(mUrl.match(/\.(mp4|webm|gifv)$/i) || mUrl.includes('v.redd.it') || mUrl.includes('redgifs.com') || mUrl.includes('gfycat.com') || mUrl.includes('youtube.com') || mUrl.includes('youtu.be')){
         mType = 'vid';
-        if(mUrl.includes('v.redd.it')){
-          const cleanV = mUrl.split('?')[0].replace(/\/$/, '');
-          vidSrc = `${cleanV}/DASH_720.mp4`;
-        } else if(mUrl.endsWith('.gifv')){
-          vidSrc = mUrl.replace('.gifv', '.mp4');
-        } else {
-          vidSrc = p.media?.reddit_video?.fallback_url || mUrl;
-        }
       }
 
       const nType = S.checkNSFW(p);
@@ -104,7 +99,7 @@ window.Slackify = window.Slackify || {};
         let btnLabel = '[+] View Media';
         if(nType === 'gore') btnLabel = '[+] ⚠️ GORE (Reveal)';
         else if(nType === 'nudity') btnLabel = '[+] 🔞 NSFW (Reveal)';
-        cH += '<span id="mbtn-' + p.id + '" data-def="' + btnLabel + '" onclick="window.Slackify.toggleMedia(\'' + p.id + '\', event)" style="font-size:11px;color:' + (nType === 'gore' ? '#DC2626' : (nType === 'nudity' ? '#E01E5A' : '#1264A3')) + ';font-weight:700;background:#F2F2F2;border:1px solid #E2E2E2;border-radius:4px;padding:1px 6px;cursor:pointer;margin-left:4px;">' + btnLabel + '</span>';
+        cH += '<span id="mbtn-' + p.id + '" data-def="' + btnLabel + '" data-loaded="0" onclick="window.Slackify.toggleMedia(\'' + p.id + '\', \'' + encodeURIComponent(mUrl) + '\', event)" style="font-size:11px;color:' + (nType === 'gore' ? '#DC2626' : (nType === 'nudity' ? '#E01E5A' : '#1264A3')) + ';font-weight:700;background:#F2F2F2;border:1px solid #E2E2E2;border-radius:4px;padding:1px 6px;cursor:pointer;margin-left:4px;">' + btnLabel + '</span>';
       }
 
       cH += '</div>';
@@ -113,17 +108,9 @@ window.Slackify = window.Slackify || {};
       cH += '<div style="font-size:15px;color:#1D1C1D;margin-top:2px;line-height:1.46;font-weight:400;">' + p.title + '</div>';
       if(txt) cH += '<div style="font-size:14px;color:#616061;margin-top:4px;line-height:1.4;white-space:pre-wrap;">' + txt + '</div>';
       
-      /* Media Drawer */
+      /* Media Drawer container */
       if(mType){
-        cH += '<div id="media-' + p.id + '" style="display:none;margin-top:8px;max-width:550px;">';
-        if(mType === 'img'){
-          let directImg = mUrl.replace('http://', 'https://');
-          if(directImg.includes('imgur.com') && !directImg.match(/\.(jpeg|jpg|gif|png)$/i)){ directImg += '.jpg'; }
-          cH += '<img referrerpolicy="no-referrer" src="' + directImg + '" style="max-width:100%;max-height:450px;border-radius:6px;border:1px solid #E2E2E2;">';
-        } else if(mType === 'vid'){
-          cH += '<video controls playsinline preload="metadata" src="' + vidSrc + '" style="max-width:100%;max-height:400px;border-radius:6px;background:#000;" onerror="this.outerHTML=\'<div style=font-size:12px;color:#616061;padding:6px;><a href=\\\'' + mUrl + '\\\' target=\\\'_blank\\\' style=color:#1264A3;>Open video on external source ↗</a></div>\'"></video>';
-        }
-        cH += '</div>';
+        cH += '<div id="media-' + p.id + '" style="display:none;margin-top:8px;max-width:550px;"></div>';
       }
 
       /* Action Row */
@@ -220,22 +207,74 @@ window.Slackify = window.Slackify || {};
     });
   };
 
-  /* Toggle media view */
-  S.toggleMedia = function(id, e){
+  /* Dynamic Media Expander: Resolves accurate MP4 streams & iframes on demand */
+  S.toggleMedia = function(id, encodedUrl, e){
     if(e) e.stopPropagation();
     const box = document.getElementById('media-' + id);
     const btn = document.getElementById('mbtn-' + id);
     if(!box || !btn) return;
-    if(box.style.display === 'none'){
-      box.style.display = 'block';
-      btn.innerHTML = '[-] Collapse';
-      btn.style.background = '#1264A3';
-      btn.style.color = '#FFFFFF';
-    } else {
+
+    if(box.style.display === 'block'){
       box.style.display = 'none';
       btn.innerHTML = btn.getAttribute('data-def') || '[+] View Media';
       btn.style.background = '#F2F2F2';
       btn.style.color = '#1264A3';
+      return;
     }
+
+    box.style.display = 'block';
+    btn.innerHTML = '[-] Collapse';
+    btn.style.background = '#1264A3';
+    btn.style.color = '#FFFFFF';
+
+    // If media was already fetched and rendered once, don't recreate it
+    if(btn.getAttribute('data-loaded') === '1') return;
+    btn.setAttribute('data-loaded', '1');
+
+    const mUrl = decodeURIComponent(encodedUrl);
+
+    // Images
+    if(mUrl.match(/\.(jpeg|jpg|gif|png|webp)$/i) || mUrl.includes('i.redd.it') || (mUrl.includes('imgur.com') && !mUrl.match(/\.(mp4|gifv|webm)$/i))){
+      let directImg = mUrl.replace('http://', 'https://');
+      if(directImg.includes('imgur.com') && !directImg.match(/\.(jpeg|jpg|gif|png)$/i)){ directImg += '.jpg'; }
+      box.innerHTML = `<img referrerpolicy="no-referrer" src="${directImg}" style="max-width:100%;max-height:450px;border-radius:6px;border:1px solid #E2E2E2;">`;
+      return;
+    }
+
+    // Direct Imgur .gifv / .mp4
+    if(mUrl.endsWith('.gifv') || mUrl.match(/\.(mp4|webm)$/i)){
+      const vidSource = mUrl.replace('.gifv', '.mp4');
+      box.innerHTML = `<video controls playsinline autoplay loop muted src="${vidSource}" style="max-width:100%;max-height:420px;border-radius:6px;background:#000;"></video>`;
+      return;
+    }
+
+    // Video streams (v.redd.it, redgifs, youtube, etc.): fetch post metadata for direct stream
+    box.innerHTML = '<div style="color:#616061;font-size:12px;padding:6px 0;">Loading video player...</div>';
+
+    fetch(`/by_id/t3_${id}.json?raw_json=1`)
+    .then(r => r.json())
+    .then(res => {
+      const post = res?.data?.children?.[0]?.data;
+      const redditVideo = post?.media?.reddit_video || post?.crosspost_parent_list?.[0]?.media?.reddit_video;
+      
+      if(redditVideo && redditVideo.fallback_url){
+        box.innerHTML = `<video controls playsinline autoplay src="${redditVideo.fallback_url}" style="max-width:100%;max-height:420px;border-radius:6px;background:#000;"></video>`;
+      } else if(post?.secure_media_embed?.content){
+        // Secure iframe embed (RedGifs, YouTube, Gfycat)
+        const parser = new DOMParser();
+        const decodedHtml = parser.parseFromString(post.secure_media_embed.content, 'text/html').body.textContent || '';
+        box.innerHTML = `<div style="max-width:100%;border-radius:6px;overflow:hidden;">${decodedHtml}</div>`;
+      } else if(mUrl.includes('v.redd.it')){
+        // Direct DASH fallback
+        const cleanV = mUrl.split('?')[0].replace(/\/$/, '');
+        box.innerHTML = `<video controls playsinline autoplay src="${cleanV}/DASH_480.mp4" style="max-width:100%;max-height:420px;border-radius:6px;background:#000;" onerror="this.outerHTML='<div style=font-size:12px;color:#616061;padding:6px;><a href=\\\'${mUrl}\\\' target=\\\'_blank\\\' style=color:#1264A3;>Open video externally ↗</a></div>'"></video>`;
+      } else {
+        box.innerHTML = `<div style="font-size:12px;padding:8px 0;"><a href="${mUrl}" target="_blank" style="color:#1264A3;font-weight:700;">Open external video link ↗</a></div>`;
+      }
+    })
+    .catch(err => {
+      console.error('Failed to load video stream metadata:', err);
+      box.innerHTML = `<div style="font-size:12px;padding:6px 0;"><a href="${mUrl}" target="_blank" style="color:#1264A3;">Open video source ↗</a></div>`;
+    });
   };
 })(window.Slackify);
