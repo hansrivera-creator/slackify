@@ -3,7 +3,6 @@ window.Slackify = window.Slackify || {};
 
 (function(S){
   S.currentAfter = null;
-  S.expandoMap = {}; // Stores Reddit's official pre-built players
 
   /* Check NSFW categorization */
   S.checkNSFW = function(post){
@@ -13,7 +12,7 @@ window.Slackify = window.Slackify || {};
     return gK.some(k => txt.includes(k)) ? 'gore' : 'nudity';
   };
 
-  /* Scrape items + native players directly from old Reddit HTML */
+  /* Scrape items + pagination token directly from old Reddit HTML */
   S.extractPostsFromDoc = function(doc){
     const items = [];
     doc.querySelectorAll('#siteTable .thing').forEach(el => {
@@ -28,20 +27,7 @@ window.Slackify = window.Slackify || {};
       
       const cleanId = id.replace(/^t3_/, '');
       const rawUrl = titleEl.getAttribute('href') || el.getAttribute('data-url') || '';
-      
-      // 1. Grab Reddit's official expando (this contains the real video/iframe!)
       const expandoBtn = el.querySelector('.expando-button');
-      const expandoDiv = el.querySelector('.expando');
-      let expandoHtml = '';
-      if(expandoDiv && expandoDiv.innerHTML.trim()){
-        expandoHtml = expandoDiv.innerHTML;
-      } else if(el.getAttribute('data-cachedhtml')){
-        expandoHtml = el.getAttribute('data-cachedhtml');
-      }
-
-      if(expandoHtml){
-        S.expandoMap[cleanId] = expandoHtml;
-      }
 
       items.push({
         id: cleanId,
@@ -50,7 +36,7 @@ window.Slackify = window.Slackify || {};
         url: rawUrl,
         num_comments: commentCount,
         over_18: el.classList.contains('over18'),
-        hasExpando: !!(expandoBtn || expandoHtml),
+        hasExpando: !!expandoBtn,
         selftext: ''
       });
     });
@@ -182,7 +168,7 @@ window.Slackify = window.Slackify || {};
     });
   };
 
-  /* Pagination: Load older posts */
+  /* Pagination */
   S.loadMorePosts = function(){
     if(!S.currentAfter) return;
     const btn = document.querySelector('#slack-load-more-btn button');
@@ -222,7 +208,7 @@ window.Slackify = window.Slackify || {};
     });
   };
 
-  /* Toggle media view: Uses Reddit's embedded expando or safe direct player */
+  /* Toggle media view: Uses post comment JSON to extract working video endpoints */
   S.toggleMedia = function(id, encodedUrl, e){
     if(e) e.stopPropagation();
     const box = document.getElementById('media-' + id);
@@ -244,7 +230,6 @@ window.Slackify = window.Slackify || {};
     btn.style.background = '#1264A3';
     btn.style.color = '#FFFFFF';
 
-    // If already populated, just show it
     if(box.innerHTML.trim() !== ''){
       const v = box.querySelector('video');
       if(v) v.play();
@@ -275,20 +260,39 @@ window.Slackify = window.Slackify || {};
       return;
     }
 
-    // 4. Reddit's Native Embedded Player (from original page)
-    if(S.expandoMap[id]){
-      box.innerHTML = `<div style="max-width:100%;border-radius:6px;overflow:hidden;background:#000;">${S.expandoMap[id]}</div>`;
-      return;
-    }
+    // 4. Fetch the post comments JSON directly
+    box.innerHTML = '<div style="color:#616061;font-size:12px;padding:6px 0;">Loading video player...</div>';
 
-    // 5. Native v.redd.it fallback
-    if(mUrl.includes('v.redd.it')){
-      const cleanV = mUrl.split('?')[0].replace(/\/$/, '');
-      box.innerHTML = `<video controls playsinline autoplay referrerpolicy="no-referrer" src="${cleanV}/HLSPlaylist.m3u8" style="max-width:100%;max-height:420px;border-radius:6px;background:#000;" onerror="this.outerHTML='<iframe src=\\\'${cleanV}\\\' style=\\\'width:100%;height:320px;border:none;border-radius:6px;\\\'></iframe>'"></video>`;
-      return;
-    }
+    fetch(`/comments/${id}.json?raw_json=1&limit=1`)
+    .then(r => {
+      if(!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    })
+    .then(d => {
+      const p = d[0]?.data?.children[0]?.data;
+      const rVid = p?.media?.reddit_video || p?.crosspost_parent_list?.[0]?.media?.reddit_video;
 
-    // 6. Any other external video (Streamable, RedGifs, etc.) embedded inline
-    box.innerHTML = `<iframe src="${mUrl}" referrerpolicy="no-referrer" style="width:100%;height:350px;border:1px solid #E2E2E2;border-radius:6px;" allowfullscreen></iframe>`;
+      if(rVid && rVid.fallback_url){
+        // Working native video stream
+        box.innerHTML = `<video controls playsinline autoplay referrerpolicy="no-referrer" src="${rVid.fallback_url}" style="max-width:100%;max-height:420px;border-radius:6px;background:#000;"></video>`;
+        return;
+      }
+
+      // Check for secure media embed (Redgifs, Streamable, Gfycat)
+      const rawEmbed = p?.secure_media_embed?.content || p?.media_embed?.content;
+      if(rawEmbed){
+        const parser = new DOMParser();
+        const decoded = parser.parseFromString(rawEmbed, 'text/html').body.textContent || '';
+        box.innerHTML = `<div style="max-width:100%;border-radius:6px;overflow:hidden;">${decoded}</div>`;
+        return;
+      }
+
+      // Fallback: Embed URL in sandbox frame
+      box.innerHTML = `<iframe src="${mUrl}" referrerpolicy="no-referrer" style="width:100%;height:350px;border:1px solid #E2E2E2;border-radius:6px;" allowfullscreen></iframe>`;
+    })
+    .catch(err => {
+      console.error('Failed to load video:', err);
+      box.innerHTML = `<iframe src="${mUrl}" referrerpolicy="no-referrer" style="width:100%;height:350px;border:1px solid #E2E2E2;border-radius:6px;" allowfullscreen></iframe>`;
+    });
   };
 })(window.Slackify);
