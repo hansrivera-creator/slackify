@@ -72,9 +72,22 @@ window.Slackify = window.Slackify || {};
       cd.onmouseout = function(){ this.style.background = 'transparent'; };
 
       let txt = p.selftext ? p.selftext.substring(0, 300) + (p.selftext.length > 300 ? '...' : '') : '';
-      let mUrl = p.url || '', mType = null;
-      if(mUrl.match(/\.(jpeg|jpg|gif|png)$/i) || mUrl.includes('i.redd.it') || mUrl.includes('imgur.com') || p.post_hint === 'image' || p.is_gallery){ mType = 'img'; }
-      else if(mUrl.match(/\.(mp4|webm)$/i) || p.is_video || mUrl.includes('v.redd.it') || mUrl.includes('gfycat.com')){ mType = 'vid'; }
+      
+      /* Robust Media & Video Stream Detection */
+      let mUrl = p.url || '', mType = null, vidSrc = '';
+      if(mUrl.match(/\.(jpeg|jpg|gif|png|webp)$/i) || mUrl.includes('i.redd.it') || (mUrl.includes('imgur.com') && !mUrl.match(/\.(mp4|gifv|webm)$/i))){
+        mType = 'img';
+      } else if(mUrl.match(/\.(mp4|webm|gifv)$/i) || mUrl.includes('v.redd.it') || mUrl.includes('redgifs.com') || mUrl.includes('gfycat.com')){
+        mType = 'vid';
+        if(mUrl.includes('v.redd.it')){
+          const cleanV = mUrl.split('?')[0].replace(/\/$/, '');
+          vidSrc = `${cleanV}/DASH_720.mp4`;
+        } else if(mUrl.endsWith('.gifv')){
+          vidSrc = mUrl.replace('.gifv', '.mp4');
+        } else {
+          vidSrc = p.media?.reddit_video?.fallback_url || mUrl;
+        }
+      }
 
       const nType = S.checkNSFW(p);
 
@@ -108,8 +121,7 @@ window.Slackify = window.Slackify || {};
           if(directImg.includes('imgur.com') && !directImg.match(/\.(jpeg|jpg|gif|png)$/i)){ directImg += '.jpg'; }
           cH += '<img referrerpolicy="no-referrer" src="' + directImg + '" style="max-width:100%;max-height:450px;border-radius:6px;border:1px solid #E2E2E2;">';
         } else if(mType === 'vid'){
-          let vSrc = p.media?.reddit_video?.fallback_url || mUrl;
-          cH += '<video controls src="' + vSrc + '" style="max-width:100%;max-height:400px;border-radius:6px;background:#000;"></video>';
+          cH += '<video controls playsinline preload="metadata" src="' + vidSrc + '" style="max-width:100%;max-height:400px;border-radius:6px;background:#000;" onerror="this.outerHTML=\'<div style=font-size:12px;color:#616061;padding:6px;><a href=\\\'' + mUrl + '\\\' target=\\\'_blank\\\' style=color:#1264A3;>Open video on external source ↗</a></div>\'"></video>';
         }
         cH += '</div>';
       }
