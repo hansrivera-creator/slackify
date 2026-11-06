@@ -28,6 +28,16 @@ window.Slackify = window.Slackify || {};
       const cleanId = id.replace(/^t3_/, '');
       const rawUrl = titleEl.getAttribute('href') || el.getAttribute('data-url') || '';
       
+      // Pull embedded expando iframe or player code if already rendered by Reddit
+      const expandoBtn = el.querySelector('.expando-button');
+      let expandoHtml = '';
+      if(expandoBtn){
+        const expandoDiv = el.querySelector('.expando');
+        if(expandoDiv && expandoDiv.innerHTML.trim()){
+          expandoHtml = expandoDiv.innerHTML;
+        }
+      }
+
       items.push({
         id: cleanId,
         author: authorEl ? authorEl.innerText : '[unknown]',
@@ -35,7 +45,8 @@ window.Slackify = window.Slackify || {};
         url: rawUrl,
         num_comments: commentCount,
         over_18: el.classList.contains('over18'),
-        selftext: ''
+        selftext: '',
+        expandoHtml: expandoHtml
       });
     });
 
@@ -80,7 +91,7 @@ window.Slackify = window.Slackify || {};
       let mUrl = p.url || '', mType = null;
       if(mUrl.match(/\.(jpeg|jpg|gif|png|webp)$/i) || mUrl.includes('i.redd.it') || (mUrl.includes('imgur.com') && !mUrl.match(/\.(mp4|gifv|webm)$/i))){
         mType = 'img';
-      } else if(mUrl.match(/\.(mp4|webm|gifv)$/i) || mUrl.includes('v.redd.it') || mUrl.includes('redgifs.com') || mUrl.includes('gfycat.com') || mUrl.includes('youtube.com') || mUrl.includes('youtu.be')){
+      } else if(mUrl.match(/\.(mp4|webm|gifv)$/i) || mUrl.includes('v.redd.it') || mUrl.includes('redgifs.com') || mUrl.includes('gfycat.com') || mUrl.includes('youtube.com') || mUrl.includes('youtu.be') || p.expandoHtml){
         mType = 'vid';
       }
 
@@ -124,6 +135,12 @@ window.Slackify = window.Slackify || {};
 
       cd.innerHTML = cH;
       con.appendChild(cd);
+
+      // Cache expando if present
+      if(p.expandoHtml){
+        S._expandoCache = S._expandoCache || {};
+        S._expandoCache[p.id] = p.expandoHtml;
+      }
     });
 
     if(S.currentAfter){
@@ -207,7 +224,7 @@ window.Slackify = window.Slackify || {};
     });
   };
 
-  /* Dynamic Media Expander: Resolves accurate MP4 streams & iframes on demand */
+  /* Dynamic Media Expander: Plays in-place with fallback */
   S.toggleMedia = function(id, encodedUrl, e){
     if(e) e.stopPropagation();
     const box = document.getElementById('media-' + id);
@@ -219,6 +236,8 @@ window.Slackify = window.Slackify || {};
       btn.innerHTML = btn.getAttribute('data-def') || '[+] View Media';
       btn.style.background = '#F2F2F2';
       btn.style.color = '#1264A3';
+      const activeVid = box.querySelector('video');
+      if(activeVid) activeVid.pause();
       return;
     }
 
@@ -227,13 +246,16 @@ window.Slackify = window.Slackify || {};
     btn.style.background = '#1264A3';
     btn.style.color = '#FFFFFF';
 
-    // If media was already fetched and rendered once, don't recreate it
-    if(btn.getAttribute('data-loaded') === '1') return;
+    if(btn.getAttribute('data-loaded') === '1'){
+      const activeVid = box.querySelector('video');
+      if(activeVid) activeVid.play();
+      return;
+    }
     btn.setAttribute('data-loaded', '1');
 
     const mUrl = decodeURIComponent(encodedUrl);
 
-    // Images
+    // 1. Direct Images
     if(mUrl.match(/\.(jpeg|jpg|gif|png|webp)$/i) || mUrl.includes('i.redd.it') || (mUrl.includes('imgur.com') && !mUrl.match(/\.(mp4|gifv|webm)$/i))){
       let directImg = mUrl.replace('http://', 'https://');
       if(directImg.includes('imgur.com') && !directImg.match(/\.(jpeg|jpg|gif|png)$/i)){ directImg += '.jpg'; }
@@ -241,14 +263,20 @@ window.Slackify = window.Slackify || {};
       return;
     }
 
-    // Direct Imgur .gifv / .mp4
+    // 2. Direct MP4 / Imgur gifv
     if(mUrl.endsWith('.gifv') || mUrl.match(/\.(mp4|webm)$/i)){
       const vidSource = mUrl.replace('.gifv', '.mp4');
-      box.innerHTML = `<video controls playsinline autoplay loop muted src="${vidSource}" style="max-width:100%;max-height:420px;border-radius:6px;background:#000;"></video>`;
+      box.innerHTML = `<video controls playsinline autoplay loop muted referrerpolicy="no-referrer" src="${vidSource}" style="max-width:100%;max-height:420px;border-radius:6px;background:#000;"></video>`;
       return;
     }
 
-    // Video streams (v.redd.it, redgifs, youtube, etc.): fetch post metadata for direct stream
+    // 3. If Reddit's original expando was already embedded in the DOM, reuse it directly
+    if(S._expandoCache && S._expandoCache[id]){
+      box.innerHTML = S._expandoCache[id];
+      return;
+    }
+
+    // 4. Fallback: Fetch complete JSON data to unpack Reddit Video or iframe embeds
     box.innerHTML = '<div style="color:#616061;font-size:12px;padding:6px 0;">Loading video player...</div>';
 
     fetch(`/by_id/t3_${id}.json?raw_json=1`)
@@ -258,23 +286,25 @@ window.Slackify = window.Slackify || {};
       const redditVideo = post?.media?.reddit_video || post?.crosspost_parent_list?.[0]?.media?.reddit_video;
       
       if(redditVideo && redditVideo.fallback_url){
-        box.innerHTML = `<video controls playsinline autoplay src="${redditVideo.fallback_url}" style="max-width:100%;max-height:420px;border-radius:6px;background:#000;"></video>`;
-      } else if(post?.secure_media_embed?.content){
-        // Secure iframe embed (RedGifs, YouTube, Gfycat)
+        // Direct stream without referrer header block
+        box.innerHTML = `<video controls playsinline autoplay referrerpolicy="no-referrer" src="${redditVideo.fallback_url}" style="max-width:100%;max-height:420px;border-radius:6px;background:#000;"></video>`;
+      } else if(post?.secure_media_embed?.content || post?.media_embed?.content){
+        // Decode iframe content (Gfycat, Redgifs, YouTube, Streamable)
+        const rawEmbed = post.secure_media_embed?.content || post.media_embed?.content;
         const parser = new DOMParser();
-        const decodedHtml = parser.parseFromString(post.secure_media_embed.content, 'text/html').body.textContent || '';
+        const decodedHtml = parser.parseFromString(rawEmbed, 'text/html').body.textContent || '';
         box.innerHTML = `<div style="max-width:100%;border-radius:6px;overflow:hidden;">${decodedHtml}</div>`;
-      } else if(mUrl.includes('v.redd.it')){
-        // Direct DASH fallback
-        const cleanV = mUrl.split('?')[0].replace(/\/$/, '');
-        box.innerHTML = `<video controls playsinline autoplay src="${cleanV}/DASH_480.mp4" style="max-width:100%;max-height:420px;border-radius:6px;background:#000;" onerror="this.outerHTML='<div style=font-size:12px;color:#616061;padding:6px;><a href=\\\'${mUrl}\\\' target=\\\'_blank\\\' style=color:#1264A3;>Open video externally ↗</a></div>'"></video>`;
+      } else if(post?.url && post.url.includes('v.redd.it')){
+        // Embed official Reddit media player wrapper
+        const cleanV = post.url.split('?')[0].replace(/\/$/, '');
+        box.innerHTML = `<iframe src="${cleanV}/DASH_480.mp4" frameborder="0" scrolling="no" allowfullscreen style="width:100%;height:320px;border-radius:6px;border:none;"></iframe>`;
       } else {
-        box.innerHTML = `<div style="font-size:12px;padding:8px 0;"><a href="${mUrl}" target="_blank" style="color:#1264A3;font-weight:700;">Open external video link ↗</a></div>`;
+        box.innerHTML = `<iframe src="${mUrl}" frameborder="0" allowfullscreen style="width:100%;height:320px;border-radius:6px;border:1px solid #E2E2E2;"></iframe>`;
       }
     })
     .catch(err => {
       console.error('Failed to load video stream metadata:', err);
-      box.innerHTML = `<div style="font-size:12px;padding:6px 0;"><a href="${mUrl}" target="_blank" style="color:#1264A3;">Open video source ↗</a></div>`;
+      box.innerHTML = `<div style="color:#EF4444;font-size:12px;padding:6px 0;">Video unavailable.</div>`;
     });
   };
 })(window.Slackify);
