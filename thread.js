@@ -60,10 +60,20 @@ window.Slackify = window.Slackify || {};
     if(!rawText) return null;
 
     cNodeCount++;
-    const u = S.getUser(co.author || '[unknown]');
+
+    // Extract genuine author name from multiple possible Reddit properties
+    let authorName = co.author || co.author_fullname || (co.data && co.data.author) || '';
+    if(!authorName || authorName === '[deleted]' || authorName === '[unknown]'){
+      // Generate unique pseudonym per node so comments don't all map to the same person
+      authorName = 'user_' + (co.id || cNodeCount);
+    }
+
+    const u = S.getUser(authorName);
+    const score = (co.score !== undefined) ? co.score : ((co.ups !== undefined) ? co.ups : 1);
+
     const w = document.createElement('div');
     w.className = 'comment-node';
-    const commentId = co.name || ('t1_' + co.id);
+    const commentId = co.name || ('t1_' + (co.id || cNodeCount));
     w.id = 'slack-comment-' + commentId;
     w.style.cssText = 'display:flex;gap:8px;margin-bottom:10px;font-size:14px;';
     
@@ -79,7 +89,7 @@ window.Slackify = window.Slackify || {};
         '<div style="display:flex;align-items:center;gap:8px;">' +
           '<img referrerpolicy="no-referrer" src="' + u.avatar + '" style="width:24px;height:24px;border-radius:4px;background:#E2E2E2;flex-shrink:0;">' +
           '<span style="font-weight:700;color:#1D1C1D;">' + u.name + '</span>' +
-          '<span style="font-size:12px;color:#616061;">▲ ' + (co.score || 0) + '</span>' +
+          '<span style="font-size:12px;color:#616061;">▲ ' + score + '</span>' +
         '</div>' +
         '<div class="comment-body-wrapper" style="margin-top:4px;">' +
           '<div style="color:#1D1C1D;white-space:pre-wrap;line-height:1.45;">' + renderedContent + '</div>' +
@@ -165,7 +175,6 @@ window.Slackify = window.Slackify || {};
       })
       .then(res => {
         const things = res?.json?.data?.things || [];
-        console.log('Reddit morechildren returned:', things.length, 'items');
 
         if(things.length === 0){
           btnWrapper.remove();
@@ -175,9 +184,7 @@ window.Slackify = window.Slackify || {};
           return;
         }
 
-        // Target the live comments container
         const liveRoot = document.getElementById('thread-comments-root') || container;
-        let renderedCount = 0;
 
         things.forEach(item => {
           const cData = item.data;
@@ -195,22 +202,17 @@ window.Slackify = window.Slackify || {};
               }
               if(parentChildContainer){
                 S.renderCommentNode(cData, parentChildContainer);
-                renderedCount++;
                 return;
               }
             }
             
-            // Insert directly into thread root if top-level or parent not found
             S.renderCommentNode(cData, liveRoot);
-            renderedCount++;
           } else if(item.kind === 'more' && cData.children){
             cData.children.forEach(id => {
               if(!moreIds.includes(id)) moreIds.push(id);
             });
           }
         });
-
-        console.log('Successfully inserted into view:', renderedCount, 'comments');
 
         btnWrapper.remove();
         if(moreIds.length > 0){
