@@ -52,7 +52,7 @@ window.Slackify = window.Slackify || {};
     return txt.value;
   }
 
-  /* Create and return a comment DOM node without attaching it */
+  /* Create and return a comment DOM node */
   S.createCommentElement = function(co){
     if(!co) return null;
     
@@ -161,7 +161,7 @@ window.Slackify = window.Slackify || {};
       btn.innerText = 'Loading replies...';
       btn.disabled = true;
 
-      const chunk = moreIds.splice(0, 20);
+      const chunk = moreIds.splice(0, 30);
       const postCleanId = cleanId(postId);
 
       fetchModhash().then(mh => {
@@ -199,9 +199,9 @@ window.Slackify = window.Slackify || {};
 
         const liveRoot = document.getElementById('thread-comments-root') || container;
 
-        // STEP 1: Pre-create elements and map by normalized ID
+        // Collect new comments and map them
         const commentElements = {};
-        const commentsList = [];
+        const unplaced = [];
 
         things.forEach(item => {
           const cData = item.data;
@@ -215,7 +215,7 @@ window.Slackify = window.Slackify || {};
               const isTopLevel = !cData.parent_id || cData.parent_id.startsWith('t3_') || pid === postCleanId;
               
               commentElements[cid] = nodeEl;
-              commentsList.push({ el: nodeEl, cid: cid, pid: pid, isTopLevel: isTopLevel });
+              unplaced.push({ el: nodeEl, cid: cid, pid: pid, isTopLevel: isTopLevel });
             }
           } else if(item.kind === 'more' && cData.children){
             cData.children.forEach(id => {
@@ -224,38 +224,52 @@ window.Slackify = window.Slackify || {};
           }
         });
 
-        // STEP 2: Link comments to either in-memory batch peers or on-screen DOM nodes
-        commentsList.forEach(cItem => {
-          if(cItem.isTopLevel){
-            liveRoot.appendChild(cItem.el);
-            return;
-          }
+        // Multi-pass placement to preserve context anywhere in the thread
+        let changed = true;
+        let passes = 0;
+        while(changed && unplaced.length > 0 && passes < 5){
+          changed = false;
+          passes++;
 
-          // Check if parent is inside this same incoming batch
-          if(commentElements[cItem.pid]){
-            const batchParentChildContainer = commentElements[cItem.pid].querySelector('.child-container');
-            if(batchParentChildContainer){
-              batchParentChildContainer.appendChild(cItem.el);
-              return;
+          for(let i = unplaced.length - 1; i >= 0; i--){
+            const item = unplaced[i];
+
+            if(item.isTopLevel){
+              liveRoot.appendChild(item.el);
+              unplaced.splice(i, 1);
+              changed = true;
+              continue;
+            }
+
+            // 1. Is parent already in the visible DOM? (e.g. earlier reply to Aditya Nair)
+            const domParent = document.getElementById('slack-comment-' + item.pid);
+            if(domParent){
+              const childBox = domParent.querySelector('.child-container');
+              if(childBox){
+                childBox.appendChild(item.el);
+                unplaced.splice(i, 1);
+                changed = true;
+                continue;
+              }
+            }
+
+            // 2. Is parent in this new batch and already attached somewhere?
+            const batchParent = commentElements[item.pid];
+            if(batchParent && batchParent.isConnected){
+              const childBox = batchParent.querySelector('.child-container');
+              if(childBox){
+                childBox.appendChild(item.el);
+                unplaced.splice(i, 1);
+                changed = true;
+                continue;
+              }
             }
           }
+        }
 
-          // Check if parent is already rendered in the DOM
-          const domParent = document.getElementById('slack-comment-' + cItem.pid);
-          if(domParent){
-            const domChildContainer = domParent.querySelector('.child-container');
-            const bodyWrap = domParent.querySelector('.comment-body-wrapper');
-            if(bodyWrap && bodyWrap.style.display === 'none'){
-              bodyWrap.style.display = 'block';
-            }
-            if(domChildContainer){
-              domChildContainer.appendChild(cItem.el);
-              return;
-            }
-          }
-
-          // Fallback: If parent couldn't be located anywhere, append to root
-          liveRoot.appendChild(cItem.el);
+        // Any leftover orphaned replies get placed at root
+        unplaced.forEach(item => {
+          liveRoot.appendChild(item.el);
         });
 
         btnWrapper.remove();
@@ -274,7 +288,7 @@ window.Slackify = window.Slackify || {};
     container.appendChild(btnWrapper);
   };
 
-  /* Open and load Thread Panel */
+  /* Open and load Thread Panel with deep pagination */
   S.openThread = function(postId){
     const p = document.getElementById('thread-panel');
     const rsR = document.getElementById('slack-resizer-right');
@@ -285,7 +299,8 @@ window.Slackify = window.Slackify || {};
     
     const postCleanId = cleanId(postId);
 
-    fetch(`/comments/${postCleanId}.json?raw_json=1&limit=50&depth=4`)
+    // Fetch up to 500 comments up to 10 levels deep in one call
+    fetch(`/comments/${postCleanId}.json?raw_json=1&limit=500&depth=10`)
     .then(r => {
       if(!r.ok) throw new Error(`HTTP ${r.status}`);
       return r.json();
