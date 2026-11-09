@@ -38,19 +38,42 @@ window.Slackify = window.Slackify || {};
     });
   };
 
+  /* Helper to decode HTML entities in Reddit bodies */
+  function decodeHtmlEntities(str){
+    if(!str) return '';
+    const txt = document.createElement('textarea');
+    txt.innerHTML = str;
+    return txt.value;
+  }
+
   /* Render a single comment bubble */
   S.renderCommentNode = function(co, target){
-    if(!co || !co.body) return null;
+    if(!co) return null;
+    
+    // Support body, contentText, or decoded body_html
+    let rawText = co.body || co.contentText || '';
+    let isHtml = false;
+    if(!rawText && co.body_html){
+      rawText = decodeHtmlEntities(co.body_html);
+      isHtml = true;
+    }
+    if(!rawText) return null;
+
     cNodeCount++;
-    const u = S.getUser(co.author);
+    const u = S.getUser(co.author || '[unknown]');
     const w = document.createElement('div');
     w.className = 'comment-node';
     const commentId = co.name || ('t1_' + co.id);
     w.id = 'slack-comment-' + commentId;
     w.style.cssText = 'display:flex;gap:8px;margin-bottom:10px;font-size:14px;';
     
-    const parsedBody = S.parseCommentBody(co.body, `cn-${cNodeCount}`);
-    
+    let renderedContent = '';
+    if(isHtml){
+      renderedContent = rawText;
+    } else {
+      renderedContent = S.parseCommentBody(rawText, `cn-${cNodeCount}`);
+    }
+
     w.innerHTML = '<div onclick="window.Slackify.toggleCommentCollapse(this)" style="width:4px;background:#E2E2E2;border-radius:2px;cursor:pointer;flex-shrink:0;"></div>' +
       '<div style="flex:1;min-width:0;">' +
         '<div style="display:flex;align-items:center;gap:8px;">' +
@@ -59,7 +82,7 @@ window.Slackify = window.Slackify || {};
           '<span style="font-size:12px;color:#616061;">▲ ' + (co.score || 0) + '</span>' +
         '</div>' +
         '<div class="comment-body-wrapper" style="margin-top:4px;">' +
-          '<div style="color:#1D1C1D;white-space:pre-wrap;">' + parsedBody + '</div>' +
+          '<div style="color:#1D1C1D;white-space:pre-wrap;line-height:1.45;">' + renderedContent + '</div>' +
           '<div class="child-container" style="margin-top:8px;"></div>' +
         '</div>' +
       '</div>';
@@ -90,9 +113,9 @@ window.Slackify = window.Slackify || {};
         }
         return;
       }
-      if(n.kind !== 't1' || !n.data?.body) return;
+      if(n.kind !== 't1') return;
       const childTarget = S.renderCommentNode(n.data, target);
-      if(childTarget && n.data.replies?.data?.children){
+      if(childTarget && n.data?.replies?.data?.children){
         S.buildThreadTree(n.data.replies.data.children, childTarget, moreIdsCollector);
       }
     });
@@ -152,30 +175,36 @@ window.Slackify = window.Slackify || {};
           return;
         }
 
+        // Target the live comments container
+        const liveRoot = document.getElementById('thread-comments-root') || container;
         let renderedCount = 0;
+
         things.forEach(item => {
-          if(item.kind === 't1' && item.data && item.data.body){
-            const parentKey = item.data.parent_id;
-            const parentEl = document.getElementById('slack-comment-' + parentKey);
+          const cData = item.data;
+          if(!cData) return;
+
+          if(item.kind === 't1' || cData.body || cData.body_html || cData.contentText){
+            const parentKey = cData.parent_id;
+            const parentEl = parentKey ? document.getElementById('slack-comment-' + parentKey) : null;
             
             if(parentEl){
               const parentChildContainer = parentEl.querySelector('.child-container');
               const bodyWrap = parentEl.querySelector('.comment-body-wrapper');
-              // Ensure parent wrapper is visible if replies arrive
               if(bodyWrap && bodyWrap.style.display === 'none'){
                 bodyWrap.style.display = 'block';
               }
               if(parentChildContainer){
-                S.renderCommentNode(item.data, parentChildContainer);
+                S.renderCommentNode(cData, parentChildContainer);
                 renderedCount++;
                 return;
               }
             }
-            // If top-level reply or parent not present, insert right into root thread container
-            S.renderCommentNode(item.data, container);
+            
+            // Insert directly into thread root if top-level or parent not found
+            S.renderCommentNode(cData, liveRoot);
             renderedCount++;
-          } else if(item.kind === 'more' && item.data?.children){
-            item.data.children.forEach(id => {
+          } else if(item.kind === 'more' && cData.children){
+            cData.children.forEach(id => {
               if(!moreIds.includes(id)) moreIds.push(id);
             });
           }
@@ -185,7 +214,7 @@ window.Slackify = window.Slackify || {};
 
         btnWrapper.remove();
         if(moreIds.length > 0){
-          S.appendMoreCommentsButton(postId, moreIds, container);
+          S.appendMoreCommentsButton(postId, moreIds, liveRoot);
         }
       })
       .catch(err => {
