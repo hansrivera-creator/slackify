@@ -81,7 +81,7 @@ window.Slackify = window.Slackify || {};
     const w = document.createElement('div');
     w.className = 'comment-node';
     w.id = 'slack-comment-' + normalizedId;
-    w.style.cssText = 'display:flex;gap:8px;margin-bottom:10px;font-size:14px;';
+    w.style.cssText = 'display:flex;gap:8px;margin-bottom:8px;font-size:14px;';
     
     let renderedContent = '';
     if(isHtml){
@@ -99,7 +99,7 @@ window.Slackify = window.Slackify || {};
         '</div>' +
         '<div class="comment-body-wrapper" style="margin-top:4px;">' +
           '<div style="color:#1D1C1D;white-space:pre-wrap;line-height:1.45;">' + renderedContent + '</div>' +
-          '<div class="child-container" style="margin-top:8px;padding-left:12px;border-left:2px solid #F0F0F0;"></div>' +
+          '<div class="child-container" style="margin-top:6px;margin-left:16px;"></div>' +
         '</div>' +
       '</div>';
     
@@ -197,9 +197,10 @@ window.Slackify = window.Slackify || {};
           if(!cData) return;
 
           if(item.kind === 't1' || cData.body || cData.body_html || cData.contentText){
-            const parentCleanId = cleanId(cData.parent_id);
-            // Search for parent node using normalized ID
-            const parentEl = parentCleanId ? document.getElementById('slack-comment-' + parentCleanId) : null;
+            const parentClean = cleanId(cData.parent_id);
+            
+            // Check if parent node exists anywhere on screen
+            const parentEl = parentClean ? (document.getElementById('slack-comment-' + parentClean) || document.getElementById('slack-comment-t1_' + parentClean)) : null;
             
             if(parentEl){
               const parentChildContainer = parentEl.querySelector('.child-container');
@@ -213,7 +214,7 @@ window.Slackify = window.Slackify || {};
               }
             }
             
-            // If it's a top-level comment (parent is t3_post), place in root
+            // Fallback for top-level replies (parent is thread)
             S.renderCommentNode(cData, liveRoot);
           } else if(item.kind === 'more' && cData.children){
             cData.children.forEach(id => {
