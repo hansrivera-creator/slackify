@@ -3,6 +3,30 @@ window.Slackify = window.Slackify || {};
 
 (function(S){
   let cNodeCount = 0;
+  let cachedModhash = null;
+
+  /* Retrieve genuine modhash for Reddit API calls */
+  function fetchModhash(){
+    if(cachedModhash) return Promise.resolve(cachedModhash);
+    
+    // Check if input is still in DOM
+    const input = document.querySelector('input[name="uh"]');
+    if(input && input.value){
+      cachedModhash = input.value;
+      return Promise.resolve(cachedModhash);
+    }
+
+    // Otherwise grab user session state
+    return fetch('/api/me.json')
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if(d?.data?.modhash){
+          cachedModhash = d.data.modhash;
+        }
+        return cachedModhash || '';
+      })
+      .catch(() => '');
+  }
 
   /* Parse URLs inside comment markdown to create inline media expanders */
   S.parseCommentBody = function(bodyText, nodePrefix){
@@ -76,7 +100,7 @@ window.Slackify = window.Slackify || {};
     });
   };
 
-  /* Button for fetching additional comment slices using GET morechildren.json */
+  /* Button for fetching additional comment slices */
   S.appendMoreCommentsButton = function(postId, moreIds, container){
     const existing = document.getElementById('slack-more-comments-btn');
     if(existing) existing.remove();
@@ -94,9 +118,26 @@ window.Slackify = window.Slackify || {};
       btn.disabled = true;
 
       const chunk = moreIds.splice(0, 20);
-      const url = `/api/morechildren.json?api_type=json&link_id=t3_${postId}&children=${chunk.join(',')}&raw_json=1`;
+      const cleanPostId = postId.replace(/^t3_/, '');
 
-      fetch(url)
+      fetchModhash().then(mh => {
+        const formData = new URLSearchParams();
+        formData.append('api_type', 'json');
+        formData.append('link_id', 't3_' + cleanPostId);
+        formData.append('children', chunk.join(','));
+        formData.append('sort', 'confidence');
+        if(mh) formData.append('uh', mh);
+
+        return fetch('/api/morechildren', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+            'X-Requested-With': 'XMLHttpRequest'
+          },
+          body: formData.toString()
+        });
+      })
       .then(r => {
         if(!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();
@@ -122,7 +163,6 @@ window.Slackify = window.Slackify || {};
                 return;
               }
             }
-            // Fallback: attach directly to the thread root if parent isn't in view
             S.renderCommentNode(item.data, container);
           } else if(item.kind === 'more' && item.data?.children){
             item.data.children.forEach(id => {
@@ -156,7 +196,9 @@ window.Slackify = window.Slackify || {};
     rsR.style.display = 'block';
     c.innerHTML = '<div style="color:#616061;font-size:13px;">Loading thread comments...</div>';
     
-    fetch(`/comments/${postId}.json?raw_json=1&limit=50&depth=4`)
+    const cleanId = postId.replace(/^t3_/, '');
+
+    fetch(`/comments/${cleanId}.json?raw_json=1&limit=50&depth=4`)
     .then(r => {
       if(!r.ok) throw new Error(`HTTP ${r.status}`);
       return r.json();
@@ -183,7 +225,7 @@ window.Slackify = window.Slackify || {};
       S.buildThreadTree(coms, commentsTarget, pendingMoreIds);
 
       if(pendingMoreIds.length > 0){
-        S.appendMoreCommentsButton(postId, pendingMoreIds, commentsTarget);
+        S.appendMoreCommentsButton(cleanId, pendingMoreIds, commentsTarget);
       }
     })
     .catch(err => {
