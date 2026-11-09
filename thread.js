@@ -23,7 +23,8 @@ window.Slackify = window.Slackify || {};
     const u = S.getUser(co.author);
     const w = document.createElement('div');
     w.className = 'comment-node';
-    w.id = 'slack-comment-' + (co.name || ('t1_' + co.id));
+    const commentId = co.name || ('t1_' + co.id);
+    w.id = 'slack-comment-' + commentId;
     w.style.cssText = 'display:flex;gap:8px;margin-bottom:10px;font-size:14px;';
     
     const parsedBody = S.parseCommentBody(co.body, `cn-${cNodeCount}`);
@@ -75,7 +76,7 @@ window.Slackify = window.Slackify || {};
     });
   };
 
-  /* Button for fetching additional comment slices using Reddit morechildren API */
+  /* Button for fetching additional comment slices using GET morechildren.json */
   S.appendMoreCommentsButton = function(postId, moreIds, container){
     const existing = document.getElementById('slack-more-comments-btn');
     if(existing) existing.remove();
@@ -93,21 +94,9 @@ window.Slackify = window.Slackify || {};
       btn.disabled = true;
 
       const chunk = moreIds.splice(0, 20);
-      const modhash = (window.reddit && window.reddit.modhash) || '';
+      const url = `/api/morechildren.json?api_type=json&link_id=t3_${postId}&children=${chunk.join(',')}&raw_json=1`;
 
-      const bodyData = new URLSearchParams();
-      bodyData.append('api_type', 'json');
-      bodyData.append('link_id', 't3_' + postId);
-      bodyData.append('children', chunk.join(','));
-      if(modhash) bodyData.append('uh', modhash);
-
-      fetch('/api/morechildren', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded'
-        },
-        body: bodyData.toString()
-      })
+      fetch(url)
       .then(r => {
         if(!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();
@@ -124,8 +113,8 @@ window.Slackify = window.Slackify || {};
 
         things.forEach(item => {
           if(item.kind === 't1' && item.data && item.data.body){
-            // Find parent node if it exists anywhere in the rendered thread
-            const parentEl = document.getElementById('slack-comment-' + item.data.parent_id);
+            const parentKey = item.data.parent_id;
+            const parentEl = document.getElementById('slack-comment-' + parentKey);
             if(parentEl){
               const parentChildContainer = parentEl.querySelector('.child-container');
               if(parentChildContainer){
@@ -133,7 +122,7 @@ window.Slackify = window.Slackify || {};
                 return;
               }
             }
-            // If parent not found or top-level, append to main container
+            // Fallback: attach directly to the thread root if parent isn't in view
             S.renderCommentNode(item.data, container);
           } else if(item.kind === 'more' && item.data?.children){
             item.data.children.forEach(id => {
