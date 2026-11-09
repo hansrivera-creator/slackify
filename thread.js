@@ -9,14 +9,12 @@ window.Slackify = window.Slackify || {};
   function fetchModhash(){
     if(cachedModhash) return Promise.resolve(cachedModhash);
     
-    // Check if original Reddit uh field exists in DOM
     const input = document.querySelector('input[name="uh"]');
     if(input && input.value){
       cachedModhash = input.value;
       return Promise.resolve(cachedModhash);
     }
 
-    // Otherwise grab session state directly from Reddit
     return fetch('/api/me.json')
       .then(r => r.ok ? r.json() : null)
       .then(d => {
@@ -100,7 +98,7 @@ window.Slackify = window.Slackify || {};
     });
   };
 
-  /* Button for fetching additional comment slices via POST /api/morechildren */
+  /* Button for fetching additional comment slices */
   S.appendMoreCommentsButton = function(postId, moreIds, container){
     const existing = document.getElementById('slack-more-comments-btn');
     if(existing) existing.remove();
@@ -144,6 +142,8 @@ window.Slackify = window.Slackify || {};
       })
       .then(res => {
         const things = res?.json?.data?.things || [];
+        console.log('Reddit morechildren returned:', things.length, 'items');
+
         if(things.length === 0){
           btnWrapper.remove();
           if(moreIds.length > 0){
@@ -152,25 +152,36 @@ window.Slackify = window.Slackify || {};
           return;
         }
 
+        let renderedCount = 0;
         things.forEach(item => {
           if(item.kind === 't1' && item.data && item.data.body){
             const parentKey = item.data.parent_id;
             const parentEl = document.getElementById('slack-comment-' + parentKey);
+            
             if(parentEl){
               const parentChildContainer = parentEl.querySelector('.child-container');
+              const bodyWrap = parentEl.querySelector('.comment-body-wrapper');
+              // Ensure parent wrapper is visible if replies arrive
+              if(bodyWrap && bodyWrap.style.display === 'none'){
+                bodyWrap.style.display = 'block';
+              }
               if(parentChildContainer){
                 S.renderCommentNode(item.data, parentChildContainer);
+                renderedCount++;
                 return;
               }
             }
-            // Fallback: attach directly to main container if parent not found
+            // If top-level reply or parent not present, insert right into root thread container
             S.renderCommentNode(item.data, container);
+            renderedCount++;
           } else if(item.kind === 'more' && item.data?.children){
             item.data.children.forEach(id => {
               if(!moreIds.includes(id)) moreIds.push(id);
             });
           }
         });
+
+        console.log('Successfully inserted into view:', renderedCount, 'comments');
 
         btnWrapper.remove();
         if(moreIds.length > 0){
