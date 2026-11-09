@@ -9,14 +9,14 @@ window.Slackify = window.Slackify || {};
   function fetchModhash(){
     if(cachedModhash) return Promise.resolve(cachedModhash);
     
-    // Check if input is still in DOM
+    // Check if original Reddit uh field exists in DOM
     const input = document.querySelector('input[name="uh"]');
     if(input && input.value){
       cachedModhash = input.value;
       return Promise.resolve(cachedModhash);
     }
 
-    // Otherwise grab user session state
+    // Otherwise grab session state directly from Reddit
     return fetch('/api/me.json')
       .then(r => r.ok ? r.json() : null)
       .then(d => {
@@ -100,7 +100,7 @@ window.Slackify = window.Slackify || {};
     });
   };
 
-  /* Button for fetching additional comment slices */
+  /* Button for fetching additional comment slices via POST /api/morechildren */
   S.appendMoreCommentsButton = function(postId, moreIds, container){
     const existing = document.getElementById('slack-more-comments-btn');
     if(existing) existing.remove();
@@ -163,6 +163,7 @@ window.Slackify = window.Slackify || {};
                 return;
               }
             }
+            // Fallback: attach directly to main container if parent not found
             S.renderCommentNode(item.data, container);
           } else if(item.kind === 'more' && item.data?.children){
             item.data.children.forEach(id => {
