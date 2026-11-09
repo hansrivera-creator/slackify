@@ -6,21 +6,26 @@ window.Slackify = window.Slackify || {};
 
   /* Parse URLs inside comment markdown to create inline media expanders */
   S.parseCommentBody = function(bodyText, nodePrefix){
+    if(!bodyText) return '';
     const imgRegex = /(https?:\/\/[^\s<]+?\.(?:png|jpg|jpeg|gif|webp))/gi;
     let matchIdx = 0;
     return bodyText.replace(imgRegex, function(url){
       matchIdx++;
       const mediaId = `${nodePrefix}-cmedia-${matchIdx}`;
-      return `<div style="margin-top:4px;"><span id="mbtn-${mediaId}" data-def="[+] View Attached Media" onclick="window.Slackify.toggleMedia('${mediaId}', event)" style="font-size:11px;color:#1264A3;font-weight:700;background:#F2F2F2;border:1px solid #E2E2E2;border-radius:4px;padding:1px 6px;cursor:pointer;">[+] View Attached Media</span><div id="media-${mediaId}" style="display:none;margin-top:6px;max-width:450px;"><img referrerpolicy="no-referrer" src="${url}" style="max-width:100%;max-height:350px;border-radius:6px;border:1px solid #E2E2E2;"></div></div>`;
+      return `<div style="margin-top:4px;"><span id="mbtn-${mediaId}" data-def="[+] View Attached Media" onclick="window.Slackify.toggleMedia('${mediaId}', '${encodeURIComponent(url)}', event)" style="font-size:11px;color:#1264A3;font-weight:700;background:#F2F2F2;border:1px solid #E2E2E2;border-radius:4px;padding:1px 6px;cursor:pointer;">[+] View Attached Media</span><div id="media-${mediaId}" style="display:none;margin-top:6px;max-width:450px;"><img referrerpolicy="no-referrer" src="${url}" style="max-width:100%;max-height:350px;border-radius:6px;border:1px solid #E2E2E2;"></div></div>`;
     });
   };
 
   /* Render a single comment bubble */
   S.renderCommentNode = function(co, target){
+    if(!co || !co.body) return null;
     cNodeCount++;
-    const u = S.getUser(co.author), w = document.createElement('div');
+    const u = S.getUser(co.author);
+    const w = document.createElement('div');
     w.className = 'comment-node';
+    w.id = 'slack-comment-' + (co.name || ('t1_' + co.id));
     w.style.cssText = 'display:flex;gap:8px;margin-bottom:10px;font-size:14px;';
+    
     const parsedBody = S.parseCommentBody(co.body, `cn-${cNodeCount}`);
     
     w.innerHTML = '<div onclick="window.Slackify.toggleCommentCollapse(this)" style="width:4px;background:#E2E2E2;border-radius:2px;cursor:pointer;flex-shrink:0;"></div>' +
@@ -52,22 +57,25 @@ window.Slackify = window.Slackify || {};
 
   /* Recursive comment tree builder */
   S.buildThreadTree = function(nodes, target, moreIdsCollector){
+    if(!nodes || !Array.isArray(nodes)) return;
     nodes.forEach(n => {
       if(n.kind === 'more' && n.data?.children && n.data.children.length > 0){
         if(moreIdsCollector){
-          n.data.children.forEach(id => moreIdsCollector.push(id));
+          n.data.children.forEach(id => {
+            if(!moreIdsCollector.includes(id)) moreIdsCollector.push(id);
+          });
         }
         return;
       }
       if(n.kind !== 't1' || !n.data?.body) return;
       const childTarget = S.renderCommentNode(n.data, target);
-      if(n.data.replies?.data?.children){
+      if(childTarget && n.data.replies?.data?.children){
         S.buildThreadTree(n.data.replies.data.children, childTarget, moreIdsCollector);
       }
     });
   };
 
-  /* Button for fetching additional comment slices using POST */
+  /* Button for fetching additional comment slices using Reddit morechildren API */
   S.appendMoreCommentsButton = function(postId, moreIds, container){
     const existing = document.getElementById('slack-more-comments-btn');
     if(existing) existing.remove();
@@ -108,12 +116,29 @@ window.Slackify = window.Slackify || {};
         const things = res?.json?.data?.things || [];
         if(things.length === 0){
           btnWrapper.remove();
+          if(moreIds.length > 0){
+            S.appendMoreCommentsButton(postId, moreIds, container);
+          }
           return;
         }
 
         things.forEach(item => {
           if(item.kind === 't1' && item.data && item.data.body){
+            // Find parent node if it exists anywhere in the rendered thread
+            const parentEl = document.getElementById('slack-comment-' + item.data.parent_id);
+            if(parentEl){
+              const parentChildContainer = parentEl.querySelector('.child-container');
+              if(parentChildContainer){
+                S.renderCommentNode(item.data, parentChildContainer);
+                return;
+              }
+            }
+            // If parent not found or top-level, append to main container
             S.renderCommentNode(item.data, container);
+          } else if(item.kind === 'more' && item.data?.children){
+            item.data.children.forEach(id => {
+              if(!moreIds.includes(id)) moreIds.push(id);
+            });
           }
         });
 
