@@ -5,6 +5,12 @@ window.Slackify = window.Slackify || {};
   let cNodeCount = 0;
   let cachedModhash = null;
 
+  /* Helper to normalize IDs (strips t1_, t3_ prefixes) */
+  function cleanId(rawId){
+    if(!rawId) return '';
+    return String(rawId).replace(/^t[13]_/, '');
+  }
+
   /* Retrieve genuine modhash for Reddit API calls */
   function fetchModhash(){
     if(cachedModhash) return Promise.resolve(cachedModhash);
@@ -50,7 +56,6 @@ window.Slackify = window.Slackify || {};
   S.renderCommentNode = function(co, target){
     if(!co) return null;
     
-    // Support body, contentText, or decoded body_html
     let rawText = co.body || co.contentText || '';
     let isHtml = false;
     if(!rawText && co.body_html){
@@ -61,11 +66,13 @@ window.Slackify = window.Slackify || {};
 
     cNodeCount++;
 
-    // Extract genuine author name from multiple possible Reddit properties
+    const rawCommentId = co.id || co.name || ('c_' + cNodeCount);
+    const normalizedId = cleanId(rawCommentId);
+
+    // Extract genuine author name
     let authorName = co.author || co.author_fullname || (co.data && co.data.author) || '';
     if(!authorName || authorName === '[deleted]' || authorName === '[unknown]'){
-      // Generate unique pseudonym per node so comments don't all map to the same person
-      authorName = 'user_' + (co.id || cNodeCount);
+      authorName = 'user_' + normalizedId;
     }
 
     const u = S.getUser(authorName);
@@ -73,8 +80,7 @@ window.Slackify = window.Slackify || {};
 
     const w = document.createElement('div');
     w.className = 'comment-node';
-    const commentId = co.name || ('t1_' + (co.id || cNodeCount));
-    w.id = 'slack-comment-' + commentId;
+    w.id = 'slack-comment-' + normalizedId;
     w.style.cssText = 'display:flex;gap:8px;margin-bottom:10px;font-size:14px;';
     
     let renderedContent = '';
@@ -93,7 +99,7 @@ window.Slackify = window.Slackify || {};
         '</div>' +
         '<div class="comment-body-wrapper" style="margin-top:4px;">' +
           '<div style="color:#1D1C1D;white-space:pre-wrap;line-height:1.45;">' + renderedContent + '</div>' +
-          '<div class="child-container" style="margin-top:8px;"></div>' +
+          '<div class="child-container" style="margin-top:8px;padding-left:12px;border-left:2px solid #F0F0F0;"></div>' +
         '</div>' +
       '</div>';
     
@@ -149,12 +155,12 @@ window.Slackify = window.Slackify || {};
       btn.disabled = true;
 
       const chunk = moreIds.splice(0, 20);
-      const cleanPostId = postId.replace(/^t3_/, '');
+      const postCleanId = cleanId(postId);
 
       fetchModhash().then(mh => {
         const formData = new URLSearchParams();
         formData.append('api_type', 'json');
-        formData.append('link_id', 't3_' + cleanPostId);
+        formData.append('link_id', 't3_' + postCleanId);
         formData.append('children', chunk.join(','));
         formData.append('sort', 'confidence');
         if(mh) formData.append('uh', mh);
@@ -191,8 +197,9 @@ window.Slackify = window.Slackify || {};
           if(!cData) return;
 
           if(item.kind === 't1' || cData.body || cData.body_html || cData.contentText){
-            const parentKey = cData.parent_id;
-            const parentEl = parentKey ? document.getElementById('slack-comment-' + parentKey) : null;
+            const parentCleanId = cleanId(cData.parent_id);
+            // Search for parent node using normalized ID
+            const parentEl = parentCleanId ? document.getElementById('slack-comment-' + parentCleanId) : null;
             
             if(parentEl){
               const parentChildContainer = parentEl.querySelector('.child-container');
@@ -206,6 +213,7 @@ window.Slackify = window.Slackify || {};
               }
             }
             
+            // If it's a top-level comment (parent is t3_post), place in root
             S.renderCommentNode(cData, liveRoot);
           } else if(item.kind === 'more' && cData.children){
             cData.children.forEach(id => {
@@ -239,9 +247,9 @@ window.Slackify = window.Slackify || {};
     rsR.style.display = 'block';
     c.innerHTML = '<div style="color:#616061;font-size:13px;">Loading thread comments...</div>';
     
-    const cleanId = postId.replace(/^t3_/, '');
+    const postCleanId = cleanId(postId);
 
-    fetch(`/comments/${cleanId}.json?raw_json=1&limit=50&depth=4`)
+    fetch(`/comments/${postCleanId}.json?raw_json=1&limit=50&depth=4`)
     .then(r => {
       if(!r.ok) throw new Error(`HTTP ${r.status}`);
       return r.json();
@@ -268,7 +276,7 @@ window.Slackify = window.Slackify || {};
       S.buildThreadTree(coms, commentsTarget, pendingMoreIds);
 
       if(pendingMoreIds.length > 0){
-        S.appendMoreCommentsButton(cleanId, pendingMoreIds, commentsTarget);
+        S.appendMoreCommentsButton(postCleanId, pendingMoreIds, commentsTarget);
       }
     })
     .catch(err => {
