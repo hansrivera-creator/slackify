@@ -8,7 +8,7 @@ window.Slackify = window.Slackify || {};
   /* Helper to normalize IDs (strips t1_, t3_ prefixes) */
   function cleanId(rawId){
     if(!rawId) return '';
-    return String(rawId).replace(/^t[13]_/, '');
+    return String(rawId).replace(/^t[13]_/, '').trim();
   }
 
   /* Retrieve genuine modhash for Reddit API calls */
@@ -52,8 +52,8 @@ window.Slackify = window.Slackify || {};
     return txt.value;
   }
 
-  /* Render a single comment bubble */
-  S.renderCommentNode = function(co, target){
+  /* Create and return a comment DOM node without attaching it */
+  S.createCommentElement = function(co){
     if(!co) return null;
     
     let rawText = co.body || co.contentText || '';
@@ -69,7 +69,6 @@ window.Slackify = window.Slackify || {};
     const rawCommentId = co.id || co.name || ('c_' + cNodeCount);
     const normalizedId = cleanId(rawCommentId);
 
-    // Extract genuine author name
     let authorName = co.author || co.author_fullname || (co.data && co.data.author) || '';
     if(!authorName || authorName === '[deleted]' || authorName === '[unknown]'){
       authorName = 'user_' + normalizedId;
@@ -81,6 +80,7 @@ window.Slackify = window.Slackify || {};
     const w = document.createElement('div');
     w.className = 'comment-node';
     w.id = 'slack-comment-' + normalizedId;
+    w.setAttribute('data-cid', normalizedId);
     w.style.cssText = 'display:flex;gap:8px;margin-bottom:8px;font-size:14px;';
     
     let renderedContent = '';
@@ -103,8 +103,15 @@ window.Slackify = window.Slackify || {};
         '</div>' +
       '</div>';
     
-    target.appendChild(w);
-    return w.querySelector('.child-container');
+    return w;
+  };
+
+  /* Render and append a comment node */
+  S.renderCommentNode = function(co, target){
+    const el = S.createCommentElement(co);
+    if(!el) return null;
+    target.appendChild(el);
+    return el.querySelector('.child-container');
   };
 
   /* Collapse/expand comment threads */
@@ -192,35 +199,63 @@ window.Slackify = window.Slackify || {};
 
         const liveRoot = document.getElementById('thread-comments-root') || container;
 
+        // STEP 1: Pre-create elements and map by normalized ID
+        const commentElements = {};
+        const commentsList = [];
+
         things.forEach(item => {
           const cData = item.data;
           if(!cData) return;
 
           if(item.kind === 't1' || cData.body || cData.body_html || cData.contentText){
-            const parentClean = cleanId(cData.parent_id);
-            
-            // Check if parent node exists anywhere on screen
-            const parentEl = parentClean ? (document.getElementById('slack-comment-' + parentClean) || document.getElementById('slack-comment-t1_' + parentClean)) : null;
-            
-            if(parentEl){
-              const parentChildContainer = parentEl.querySelector('.child-container');
-              const bodyWrap = parentEl.querySelector('.comment-body-wrapper');
-              if(bodyWrap && bodyWrap.style.display === 'none'){
-                bodyWrap.style.display = 'block';
-              }
-              if(parentChildContainer){
-                S.renderCommentNode(cData, parentChildContainer);
-                return;
-              }
+            const nodeEl = S.createCommentElement(cData);
+            if(nodeEl){
+              const cid = cleanId(cData.id || cData.name);
+              const pid = cleanId(cData.parent_id);
+              const isTopLevel = !cData.parent_id || cData.parent_id.startsWith('t3_') || pid === postCleanId;
+              
+              commentElements[cid] = nodeEl;
+              commentsList.push({ el: nodeEl, cid: cid, pid: pid, isTopLevel: isTopLevel });
             }
-            
-            // Fallback for top-level replies (parent is thread)
-            S.renderCommentNode(cData, liveRoot);
           } else if(item.kind === 'more' && cData.children){
             cData.children.forEach(id => {
               if(!moreIds.includes(id)) moreIds.push(id);
             });
           }
+        });
+
+        // STEP 2: Link comments to either in-memory batch peers or on-screen DOM nodes
+        commentsList.forEach(cItem => {
+          if(cItem.isTopLevel){
+            liveRoot.appendChild(cItem.el);
+            return;
+          }
+
+          // Check if parent is inside this same incoming batch
+          if(commentElements[cItem.pid]){
+            const batchParentChildContainer = commentElements[cItem.pid].querySelector('.child-container');
+            if(batchParentChildContainer){
+              batchParentChildContainer.appendChild(cItem.el);
+              return;
+            }
+          }
+
+          // Check if parent is already rendered in the DOM
+          const domParent = document.getElementById('slack-comment-' + cItem.pid);
+          if(domParent){
+            const domChildContainer = domParent.querySelector('.child-container');
+            const bodyWrap = domParent.querySelector('.comment-body-wrapper');
+            if(bodyWrap && bodyWrap.style.display === 'none'){
+              bodyWrap.style.display = 'block';
+            }
+            if(domChildContainer){
+              domChildContainer.appendChild(cItem.el);
+              return;
+            }
+          }
+
+          // Fallback: If parent couldn't be located anywhere, append to root
+          liveRoot.appendChild(cItem.el);
         });
 
         btnWrapper.remove();
