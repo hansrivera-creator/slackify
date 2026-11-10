@@ -5,13 +5,11 @@ window.Slackify = window.Slackify || {};
   let cNodeCount = 0;
   let cachedModhash = null;
 
-  /* Helper to normalize IDs (strips t1_, t3_ prefixes) */
   function cleanId(rawId){
     if(!rawId) return '';
     return String(rawId).replace(/^t[13]_/, '').trim();
   }
 
-  /* Retrieve genuine modhash for Reddit API calls */
   function fetchModhash(){
     if(cachedModhash) return Promise.resolve(cachedModhash);
     
@@ -32,7 +30,6 @@ window.Slackify = window.Slackify || {};
       .catch(() => '');
   }
 
-  /* Decode HTML entities reliably */
   function decodeHtmlEntities(str){
     if(!str) return '';
     const txt = document.createElement('textarea');
@@ -40,44 +37,49 @@ window.Slackify = window.Slackify || {};
     return txt.value;
   }
 
-  /* Parse URLs and GIF macros to render images/GIFs in comments */
+  /* Parse URLs, GIFs, and inline media without attribute collisions */
   S.parseCommentMedia = function(rawText, mediaMetadata, nodePrefix){
     if(!rawText && !mediaMetadata) return '';
     let parsed = decodeHtmlEntities(rawText || '');
 
-    // 1. Resolve Reddit Giphy Markdown: ![gif](giphy|ID) or ![gif](embedCode|ID)
-    parsed = parsed.replace(/!\[(?:gif|img)\]\((?:giphy\||https?:\/\/[^\s)]*giphy\/)?([^)\s|]+)\)/gi, function(match, id){
-      const giphyId = id.split('/').pop();
-      const gifUrl = `https://i.giphy.com/media/${giphyId}/giphy.gif`;
-      return `<div style="margin:6px 0;"><img referrerpolicy="no-referrer" src="${gifUrl}" style="max-width:260px;max-height:220px;border-radius:6px;border:1px solid #E2E2E2;display:block;"></div>`;
+    // 1. Convert standalone external image URLs to expandable media pills FIRST
+    const standaloneImgRegex = /(^|\s)(https?:\/\/[^\s<]+?\.(?:png|jpg|jpeg|gif|webp)(?:\?[^\s<]*)?)/gi;
+    let matchIdx = 0;
+    parsed = parsed.replace(standaloneImgRegex, function(_, prefix, url){
+      matchIdx++;
+      const mediaId = `${nodePrefix}-cmedia-${matchIdx}`;
+      return `${prefix}<div style="margin-top:4px;"><span id="mbtn-${mediaId}" data-def="[+] View Attached Media" onclick="window.Slackify.toggleMedia('${mediaId}', '${encodeURIComponent(url)}', event)" style="font-size:11px;color:#1264A3;font-weight:700;background:#F2F2F2;border:1px solid #E2E2E2;border-radius:4px;padding:2px 6px;cursor:pointer;">[+] View Attached Media</span><div id="media-${mediaId}" style="display:none;margin-top:6px;max-width:450px;"><img referrerpolicy="no-referrer" src="${url}" style="max-width:100%;max-height:350px;border-radius:6px;border:1px solid #E2E2E2;"></div></div>`;
     });
 
-    // 2. Resolve Reddit media_metadata inline images/GIFs
+    // 2. Resolve Reddit Giphy Markdown: ![gif](giphy|ID)
+    parsed = parsed.replace(/!\[(?:gif|img)\]\((?:giphy\||https?:\/\/[^\s)]*giphy\/)?([^)\s|]+)\)/gi, function(_, id){
+      const giphyId = id.split('/').pop();
+      const gifUrl = `https://i.giphy.com/media/${giphyId}/giphy.gif`;
+      matchIdx++;
+      const mediaId = `${nodePrefix}-cmedia-${matchIdx}`;
+      return `<div style="margin-top:4px;"><span id="mbtn-${mediaId}" data-def="[+] View Attached Media" onclick="window.Slackify.toggleMedia('${mediaId}', '${encodeURIComponent(gifUrl)}', event)" style="font-size:11px;color:#1264A3;font-weight:700;background:#F2F2F2;border:1px solid #E2E2E2;border-radius:4px;padding:2px 6px;cursor:pointer;">[+] View Attached Media</span><div id="media-${mediaId}" style="display:none;margin-top:6px;max-width:450px;"><img referrerpolicy="no-referrer" src="${gifUrl}" style="max-width:100%;max-height:350px;border-radius:6px;border:1px solid #E2E2E2;"></div></div>`;
+    });
+
+    // 3. Resolve Reddit media_metadata inline images/GIFs
     if(mediaMetadata && typeof mediaMetadata === 'object'){
       Object.keys(mediaMetadata).forEach(k => {
         const item = mediaMetadata[k];
         let mediaUrl = item?.s?.u || item?.s?.gif;
         if(mediaUrl){
           mediaUrl = decodeHtmlEntities(mediaUrl).replace(/&amp;/g, '&');
+          matchIdx++;
+          const mediaId = `${nodePrefix}-cmedia-${matchIdx}`;
+          const pillHtml = `<div style="margin-top:4px;"><span id="mbtn-${mediaId}" data-def="[+] View Attached Media" onclick="window.Slackify.toggleMedia('${mediaId}', '${encodeURIComponent(mediaUrl)}', event)" style="font-size:11px;color:#1264A3;font-weight:700;background:#F2F2F2;border:1px solid #E2E2E2;border-radius:4px;padding:2px 6px;cursor:pointer;">[+] View Attached Media</span><div id="media-${mediaId}" style="display:none;margin-top:6px;max-width:450px;"><img referrerpolicy="no-referrer" src="${mediaUrl}" style="max-width:100%;max-height:350px;border-radius:6px;border:1px solid #E2E2E2;"></div></div>`;
+          
           const placeholderRegex = new RegExp(`!\\[(?:gif|img)\\]\\(${k}\\)`, 'gi');
           if(placeholderRegex.test(parsed)){
-            parsed = parsed.replace(placeholderRegex, `<div style="margin:6px 0;"><img referrerpolicy="no-referrer" src="${mediaUrl}" style="max-width:280px;max-height:240px;border-radius:6px;border:1px solid #E2E2E2;display:block;"></div>`);
+            parsed = parsed.replace(placeholderRegex, pillHtml);
           } else {
-            // If placeholder not explicitly embedded in text, append it
-            parsed += `<div style="margin:6px 0;"><img referrerpolicy="no-referrer" src="${mediaUrl}" style="max-width:280px;max-height:240px;border-radius:6px;border:1px solid #E2E2E2;display:block;"></div>`;
+            parsed += pillHtml;
           }
         }
       });
     }
-
-    // 3. Resolve direct external image links into expandable pill buttons
-    const imgRegex = /(https?:\/\/[^\s<]+?\.(?:png|jpg|jpeg|gif|webp)(?:\?[^\s<]*)?)/gi;
-    let matchIdx = 0;
-    parsed = parsed.replace(imgRegex, function(url){
-      matchIdx++;
-      const mediaId = `${nodePrefix}-cmedia-${matchIdx}`;
-      return `<div style="margin-top:4px;"><span id="mbtn-${mediaId}" data-def="[+] View Attached Media" onclick="window.Slackify.toggleMedia('${mediaId}', '${encodeURIComponent(url)}', event)" style="font-size:11px;color:#1264A3;font-weight:700;background:#F2F2F2;border:1px solid #E2E2E2;border-radius:4px;padding:2px 6px;cursor:pointer;">[+] View Attached Media</span><div id="media-${mediaId}" style="display:none;margin-top:6px;max-width:450px;"><img referrerpolicy="no-referrer" src="${url}" style="max-width:100%;max-height:350px;border-radius:6px;border:1px solid #E2E2E2;"></div></div>`;
-    });
 
     return parsed;
   };
@@ -137,7 +139,6 @@ window.Slackify = window.Slackify || {};
     w.setAttribute('data-cid', normalizedId);
     w.style.cssText = 'display:flex;gap:8px;margin-bottom:8px;font-size:14px;';
     
-    // Always parse media/GIFs
     const renderedContent = S.parseCommentMedia(rawText, co.media_metadata, `cn-${cNodeCount}`);
 
     w.innerHTML = '<div onclick="window.Slackify.toggleCommentCollapse(this)" style="width:4px;background:#E2E2E2;border-radius:2px;cursor:pointer;flex-shrink:0;"></div>' +
