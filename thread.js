@@ -1,4 +1,4 @@
-/* Slackify: Comment Recursion, Thread Drawer & Media/Markdown Enhancer */
+/* Slackify: Comment Recursion, Thread Drawer & Media Handler */
 window.Slackify = window.Slackify || {};
 
 (function(S){
@@ -32,47 +32,55 @@ window.Slackify = window.Slackify || {};
       .catch(() => '');
   }
 
-  /* Parse Reddit Markdown (Giphy embeds, headings, links, bold, italics, media URLs) */
-  S.parseCommentBody = function(bodyText, nodePrefix){
-    if(!bodyText) return '';
-    let parsed = bodyText;
-
-    // 1. Parse Reddit Giphy syntax: ![gif](giphy|ID)
-    parsed = parsed.replace(/!\[gif\]\(giphy\|([^)\s]+)\)/gi, function(_, giphyId){
-      const imgUrl = `https://i.giphy.com/media/${giphyId}/giphy.gif`;
-      return `<div style="margin:6px 0;"><img referrerpolicy="no-referrer" src="${imgUrl}" style="max-width:280px;max-height:220px;border-radius:6px;border:1px solid #E2E2E2;display:block;"></div>`;
-    });
-
-    // 2. Parse Markdown Headings: # Heading
-    parsed = parsed.replace(/^#{1,6}\s*(.+)$/gm, '<div style="font-weight:700;margin:4px 0;">$1</div>');
-
-    // 3. Parse Markdown Bold & Italics
-    parsed = parsed.replace(/\*\*\*(.*?)\*\*\*/g, '<strong><em>$1</em></strong>');
-    parsed = parsed.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-    parsed = parsed.replace(/\*(.*?)\*/g, '<em>$1</em>');
-
-    // 4. Parse Markdown links: [text](url)
-    parsed = parsed.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/gi, '<a href="$2" target="_blank" rel="noopener noreferrer" style="color:#1264A3;text-decoration:none;font-weight:600;">$1</a>');
-
-    // 5. Parse standalone image/media URLs into expandable media pills
-    const imgRegex = /(https?:\/\/[^\s<]+?\.(?:png|jpg|jpeg|gif|webp))/gi;
-    let matchIdx = 0;
-    parsed = parsed.replace(imgRegex, function(url){
-      matchIdx++;
-      const mediaId = `${nodePrefix}-cmedia-${matchIdx}`;
-      return `<div style="margin-top:4px;"><span id="mbtn-${mediaId}" data-def="[+] View Attached Media" onclick="window.Slackify.toggleMedia('${mediaId}', '${encodeURIComponent(url)}', event)" style="font-size:11px;color:#1264A3;font-weight:700;background:#F2F2F2;border:1px solid #E2E2E2;border-radius:4px;padding:1px 6px;cursor:pointer;">[+] View Attached Media</span><div id="media-${mediaId}" style="display:none;margin-top:6px;max-width:450px;"><img referrerpolicy="no-referrer" src="${url}" style="max-width:100%;max-height:350px;border-radius:6px;border:1px solid #E2E2E2;"></div></div>`;
-    });
-
-    return parsed;
-  };
-
-  /* Helper to decode HTML entities */
+  /* Decode HTML entities reliably */
   function decodeHtmlEntities(str){
     if(!str) return '';
     const txt = document.createElement('textarea');
     txt.innerHTML = str;
     return txt.value;
   }
+
+  /* Parse URLs and GIF macros to render images/GIFs in comments */
+  S.parseCommentMedia = function(rawText, mediaMetadata, nodePrefix){
+    if(!rawText && !mediaMetadata) return '';
+    let parsed = decodeHtmlEntities(rawText || '');
+
+    // 1. Resolve Reddit Giphy Markdown: ![gif](giphy|ID) or ![gif](embedCode|ID)
+    parsed = parsed.replace(/!\[(?:gif|img)\]\((?:giphy\||https?:\/\/[^\s)]*giphy\/)?([^)\s|]+)\)/gi, function(match, id){
+      const giphyId = id.split('/').pop();
+      const gifUrl = `https://i.giphy.com/media/${giphyId}/giphy.gif`;
+      return `<div style="margin:6px 0;"><img referrerpolicy="no-referrer" src="${gifUrl}" style="max-width:260px;max-height:220px;border-radius:6px;border:1px solid #E2E2E2;display:block;"></div>`;
+    });
+
+    // 2. Resolve Reddit media_metadata inline images/GIFs
+    if(mediaMetadata && typeof mediaMetadata === 'object'){
+      Object.keys(mediaMetadata).forEach(k => {
+        const item = mediaMetadata[k];
+        let mediaUrl = item?.s?.u || item?.s?.gif;
+        if(mediaUrl){
+          mediaUrl = decodeHtmlEntities(mediaUrl).replace(/&amp;/g, '&');
+          const placeholderRegex = new RegExp(`!\\[(?:gif|img)\\]\\(${k}\\)`, 'gi');
+          if(placeholderRegex.test(parsed)){
+            parsed = parsed.replace(placeholderRegex, `<div style="margin:6px 0;"><img referrerpolicy="no-referrer" src="${mediaUrl}" style="max-width:280px;max-height:240px;border-radius:6px;border:1px solid #E2E2E2;display:block;"></div>`);
+          } else {
+            // If placeholder not explicitly embedded in text, append it
+            parsed += `<div style="margin:6px 0;"><img referrerpolicy="no-referrer" src="${mediaUrl}" style="max-width:280px;max-height:240px;border-radius:6px;border:1px solid #E2E2E2;display:block;"></div>`;
+          }
+        }
+      });
+    }
+
+    // 3. Resolve direct external image links into expandable pill buttons
+    const imgRegex = /(https?:\/\/[^\s<]+?\.(?:png|jpg|jpeg|gif|webp)(?:\?[^\s<]*)?)/gi;
+    let matchIdx = 0;
+    parsed = parsed.replace(imgRegex, function(url){
+      matchIdx++;
+      const mediaId = `${nodePrefix}-cmedia-${matchIdx}`;
+      return `<div style="margin-top:4px;"><span id="mbtn-${mediaId}" data-def="[+] View Attached Media" onclick="window.Slackify.toggleMedia('${mediaId}', '${encodeURIComponent(url)}', event)" style="font-size:11px;color:#1264A3;font-weight:700;background:#F2F2F2;border:1px solid #E2E2E2;border-radius:4px;padding:2px 6px;cursor:pointer;">[+] View Attached Media</span><div id="media-${mediaId}" style="display:none;margin-top:6px;max-width:450px;"><img referrerpolicy="no-referrer" src="${url}" style="max-width:100%;max-height:350px;border-radius:6px;border:1px solid #E2E2E2;"></div></div>`;
+    });
+
+    return parsed;
+  };
 
   /* Build media embed button for OP in the drawer */
   function buildOpMediaHtml(postData){
@@ -85,7 +93,7 @@ window.Slackify = window.Slackify || {};
     const isRedditVideo = postData.is_video || url.includes('v.redd.it');
 
     if(isDirectImg){
-      const mediaId = 'op-media-' + postData.id;
+      const mediaId = 'op-media-' + (postData.id || 'main');
       return `<div style="margin-top:8px;"><span id="mbtn-${mediaId}" data-def="[+] View Attached Media" onclick="window.Slackify.toggleMedia('${mediaId}', '${encodeURIComponent(url)}', event)" style="font-size:11px;color:#1264A3;font-weight:700;background:#F2F2F2;border:1px solid #E2E2E2;border-radius:4px;padding:2px 8px;cursor:pointer;">[+] View Attached Media</span><div id="media-${mediaId}" style="display:none;margin-top:6px;max-width:480px;"><img referrerpolicy="no-referrer" src="${url}" style="max-width:100%;max-height:360px;border-radius:6px;border:1px solid #E2E2E2;"></div></div>`;
     }
 
@@ -93,7 +101,6 @@ window.Slackify = window.Slackify || {};
       return `<div style="margin-top:8px;"><a href="${url}" target="_blank" rel="noopener noreferrer" style="font-size:11px;color:#1264A3;font-weight:700;background:#F2F2F2;border:1px solid #E2E2E2;border-radius:4px;padding:2px 8px;text-decoration:none;display:inline-block;">↗ Open Original Media</a></div>`;
     }
 
-    // External link/article
     if(!url.includes(postData.permalink)){
       return `<div style="margin-top:8px;"><a href="${url}" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:#1264A3;text-decoration:none;font-weight:600;">🔗 ${url}</a></div>`;
     }
@@ -106,12 +113,10 @@ window.Slackify = window.Slackify || {};
     if(!co) return null;
     
     let rawText = co.body || co.contentText || '';
-    let isHtml = false;
     if(!rawText && co.body_html){
       rawText = decodeHtmlEntities(co.body_html);
-      isHtml = true;
     }
-    if(!rawText) return null;
+    if(!rawText && !co.media_metadata) return null;
 
     cNodeCount++;
 
@@ -132,7 +137,8 @@ window.Slackify = window.Slackify || {};
     w.setAttribute('data-cid', normalizedId);
     w.style.cssText = 'display:flex;gap:8px;margin-bottom:8px;font-size:14px;';
     
-    let renderedContent = isHtml ? rawText : S.parseCommentBody(rawText, `cn-${cNodeCount}`);
+    // Always parse media/GIFs
+    const renderedContent = S.parseCommentMedia(rawText, co.media_metadata, `cn-${cNodeCount}`);
 
     w.innerHTML = '<div onclick="window.Slackify.toggleCommentCollapse(this)" style="width:4px;background:#E2E2E2;border-radius:2px;cursor:pointer;flex-shrink:0;"></div>' +
       '<div style="flex:1;min-width:0;">' +
@@ -249,7 +255,7 @@ window.Slackify = window.Slackify || {};
           const cData = item.data;
           if(!cData) return;
 
-          if(item.kind === 't1' || cData.body || cData.body_html || cData.contentText){
+          if(item.kind === 't1' || cData.body || cData.body_html || cData.contentText || cData.media_metadata){
             const nodeEl = S.createCommentElement(cData);
             if(nodeEl){
               const cid = cleanId(cData.id || cData.name);
@@ -354,7 +360,7 @@ window.Slackify = window.Slackify || {};
           '<div style="flex:1;min-width:0;">' +
             '<div style="display:flex;align-items:center;gap:8px;"><span style="font-weight:700;color:#1D1C1D;">' + opUser.name + '</span><span style="font-size:12px;color:#616061;">1:18 AM</span></div>' +
             '<div style="font-weight:700;color:#1D1C1D;margin-top:2px;">' + postData.title + '</div>' +
-            (postData.selftext ? '<div style="font-size:14px;color:#1D1C1D;margin-top:6px;white-space:pre-wrap;">' + S.parseCommentBody(postData.selftext, 'op') + '</div>' : '') +
+            (postData.selftext ? '<div style="font-size:14px;color:#1D1C1D;margin-top:6px;white-space:pre-wrap;">' + S.parseCommentMedia(postData.selftext, null, 'op') + '</div>' : '') +
             opMediaHtml +
           '</div>' +
         '</div>';
