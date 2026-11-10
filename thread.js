@@ -1,4 +1,4 @@
-/* Slackify: Comment Recursion, Thread Drawer & morechildren Handler */
+/* Slackify: Comment Recursion, Thread Drawer & Media/Markdown Enhancer */
 window.Slackify = window.Slackify || {};
 
 (function(S){
@@ -32,24 +32,73 @@ window.Slackify = window.Slackify || {};
       .catch(() => '');
   }
 
-  /* Parse URLs inside comment markdown to create inline media expanders */
+  /* Parse Reddit Markdown (Giphy embeds, headings, links, bold, italics, media URLs) */
   S.parseCommentBody = function(bodyText, nodePrefix){
     if(!bodyText) return '';
+    let parsed = bodyText;
+
+    // 1. Parse Reddit Giphy syntax: ![gif](giphy|ID)
+    parsed = parsed.replace(/!\[gif\]\(giphy\|([^)\s]+)\)/gi, function(_, giphyId){
+      const imgUrl = `https://i.giphy.com/media/${giphyId}/giphy.gif`;
+      return `<div style="margin:6px 0;"><img referrerpolicy="no-referrer" src="${imgUrl}" style="max-width:280px;max-height:220px;border-radius:6px;border:1px solid #E2E2E2;display:block;"></div>`;
+    });
+
+    // 2. Parse Markdown Headings: # Heading
+    parsed = parsed.replace(/^#{1,6}\s*(.+)$/gm, '<div style="font-weight:700;margin:4px 0;">$1</div>');
+
+    // 3. Parse Markdown Bold & Italics
+    parsed = parsed.replace(/\*\*\*(.*?)\*\*\*/g, '<strong><em>$1</em></strong>');
+    parsed = parsed.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+    parsed = parsed.replace(/\*(.*?)\*/g, '<em>$1</em>');
+
+    // 4. Parse Markdown links: [text](url)
+    parsed = parsed.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/gi, '<a href="$2" target="_blank" rel="noopener noreferrer" style="color:#1264A3;text-decoration:none;font-weight:600;">$1</a>');
+
+    // 5. Parse standalone image/media URLs into expandable media pills
     const imgRegex = /(https?:\/\/[^\s<]+?\.(?:png|jpg|jpeg|gif|webp))/gi;
     let matchIdx = 0;
-    return bodyText.replace(imgRegex, function(url){
+    parsed = parsed.replace(imgRegex, function(url){
       matchIdx++;
       const mediaId = `${nodePrefix}-cmedia-${matchIdx}`;
       return `<div style="margin-top:4px;"><span id="mbtn-${mediaId}" data-def="[+] View Attached Media" onclick="window.Slackify.toggleMedia('${mediaId}', '${encodeURIComponent(url)}', event)" style="font-size:11px;color:#1264A3;font-weight:700;background:#F2F2F2;border:1px solid #E2E2E2;border-radius:4px;padding:1px 6px;cursor:pointer;">[+] View Attached Media</span><div id="media-${mediaId}" style="display:none;margin-top:6px;max-width:450px;"><img referrerpolicy="no-referrer" src="${url}" style="max-width:100%;max-height:350px;border-radius:6px;border:1px solid #E2E2E2;"></div></div>`;
     });
+
+    return parsed;
   };
 
-  /* Helper to decode HTML entities in Reddit bodies */
+  /* Helper to decode HTML entities */
   function decodeHtmlEntities(str){
     if(!str) return '';
     const txt = document.createElement('textarea');
     txt.innerHTML = str;
     return txt.value;
+  }
+
+  /* Build media embed button for OP in the drawer */
+  function buildOpMediaHtml(postData){
+    if(!postData) return '';
+    const url = postData.url_overridden_by_dest || postData.url || '';
+    if(!url) return '';
+
+    const isDirectImg = /\.(png|jpe?g|gif|webp)(\?.*)?$/i.test(url);
+    const isRedditGallery = url.includes('/gallery/');
+    const isRedditVideo = postData.is_video || url.includes('v.redd.it');
+
+    if(isDirectImg){
+      const mediaId = 'op-media-' + postData.id;
+      return `<div style="margin-top:8px;"><span id="mbtn-${mediaId}" data-def="[+] View Attached Media" onclick="window.Slackify.toggleMedia('${mediaId}', '${encodeURIComponent(url)}', event)" style="font-size:11px;color:#1264A3;font-weight:700;background:#F2F2F2;border:1px solid #E2E2E2;border-radius:4px;padding:2px 8px;cursor:pointer;">[+] View Attached Media</span><div id="media-${mediaId}" style="display:none;margin-top:6px;max-width:480px;"><img referrerpolicy="no-referrer" src="${url}" style="max-width:100%;max-height:360px;border-radius:6px;border:1px solid #E2E2E2;"></div></div>`;
+    }
+
+    if(isRedditVideo || isRedditGallery){
+      return `<div style="margin-top:8px;"><a href="${url}" target="_blank" rel="noopener noreferrer" style="font-size:11px;color:#1264A3;font-weight:700;background:#F2F2F2;border:1px solid #E2E2E2;border-radius:4px;padding:2px 8px;text-decoration:none;display:inline-block;">↗ Open Original Media</a></div>`;
+    }
+
+    // External link/article
+    if(!url.includes(postData.permalink)){
+      return `<div style="margin-top:8px;"><a href="${url}" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:#1264A3;text-decoration:none;font-weight:600;">🔗 ${url}</a></div>`;
+    }
+
+    return '';
   }
 
   /* Create and return a comment DOM node */
@@ -83,12 +132,7 @@ window.Slackify = window.Slackify || {};
     w.setAttribute('data-cid', normalizedId);
     w.style.cssText = 'display:flex;gap:8px;margin-bottom:8px;font-size:14px;';
     
-    let renderedContent = '';
-    if(isHtml){
-      renderedContent = rawText;
-    } else {
-      renderedContent = S.parseCommentBody(rawText, `cn-${cNodeCount}`);
-    }
+    let renderedContent = isHtml ? rawText : S.parseCommentBody(rawText, `cn-${cNodeCount}`);
 
     w.innerHTML = '<div onclick="window.Slackify.toggleCommentCollapse(this)" style="width:4px;background:#E2E2E2;border-radius:2px;cursor:pointer;flex-shrink:0;"></div>' +
       '<div style="flex:1;min-width:0;">' +
@@ -198,8 +242,6 @@ window.Slackify = window.Slackify || {};
         }
 
         const liveRoot = document.getElementById('thread-comments-root') || container;
-
-        // Collect new comments and map them
         const commentElements = {};
         const unplaced = [];
 
@@ -224,7 +266,6 @@ window.Slackify = window.Slackify || {};
           }
         });
 
-        // Multi-pass placement to preserve context anywhere in the thread
         let changed = true;
         let passes = 0;
         while(changed && unplaced.length > 0 && passes < 5){
@@ -241,7 +282,6 @@ window.Slackify = window.Slackify || {};
               continue;
             }
 
-            // 1. Is parent already in the visible DOM? (e.g. earlier reply to Aditya Nair)
             const domParent = document.getElementById('slack-comment-' + item.pid);
             if(domParent){
               const childBox = domParent.querySelector('.child-container');
@@ -253,7 +293,6 @@ window.Slackify = window.Slackify || {};
               }
             }
 
-            // 2. Is parent in this new batch and already attached somewhere?
             const batchParent = commentElements[item.pid];
             if(batchParent && batchParent.isConnected){
               const childBox = batchParent.querySelector('.child-container');
@@ -267,7 +306,6 @@ window.Slackify = window.Slackify || {};
           }
         }
 
-        // Any leftover orphaned replies get placed at root
         unplaced.forEach(item => {
           liveRoot.appendChild(item.el);
         });
@@ -288,7 +326,7 @@ window.Slackify = window.Slackify || {};
     container.appendChild(btnWrapper);
   };
 
-  /* Open and load Thread Panel with deep pagination */
+  /* Open and load Thread Panel */
   S.openThread = function(postId){
     const p = document.getElementById('thread-panel');
     const rsR = document.getElementById('slack-resizer-right');
@@ -299,7 +337,6 @@ window.Slackify = window.Slackify || {};
     
     const postCleanId = cleanId(postId);
 
-    // Fetch up to 500 comments up to 10 levels deep in one call
     fetch(`/comments/${postCleanId}.json?raw_json=1&limit=500&depth=10`)
     .then(r => {
       if(!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -310,7 +347,17 @@ window.Slackify = window.Slackify || {};
       const postData = d[0]?.data?.children[0]?.data;
       if(postData){
         const opUser = S.getUser(postData.author);
-        c.innerHTML += '<div style="padding-bottom:12px;border-bottom:1px solid #E2E2E2;margin-bottom:8px;display:flex;gap:12px;font-size:14px;"><img referrerpolicy="no-referrer" src="' + opUser.avatar + '" style="width:36px;height:36px;border-radius:4px;background:#E2E2E2;flex-shrink:0;"><div style="flex:1;min-width:0;"><div style="display:flex;align-items:center;gap:8px;"><span style="font-weight:700;color:#1D1C1D;">' + opUser.name + '</span><span style="font-size:12px;color:#616061;">1:18 AM</span></div><div style="font-weight:700;color:#1D1C1D;margin-top:2px;">' + postData.title + '</div>' + (postData.selftext ? '<div style="font-size:14px;color:#1D1C1D;margin-top:6px;white-space:pre-wrap;">' + S.parseCommentBody(postData.selftext, 'op') + '</div>' : '') + '</div></div>';
+        const opMediaHtml = buildOpMediaHtml(postData);
+        
+        c.innerHTML += '<div style="padding-bottom:12px;border-bottom:1px solid #E2E2E2;margin-bottom:8px;display:flex;gap:12px;font-size:14px;">' +
+          '<img referrerpolicy="no-referrer" src="' + opUser.avatar + '" style="width:36px;height:36px;border-radius:4px;background:#E2E2E2;flex-shrink:0;">' +
+          '<div style="flex:1;min-width:0;">' +
+            '<div style="display:flex;align-items:center;gap:8px;"><span style="font-weight:700;color:#1D1C1D;">' + opUser.name + '</span><span style="font-size:12px;color:#616061;">1:18 AM</span></div>' +
+            '<div style="font-weight:700;color:#1D1C1D;margin-top:2px;">' + postData.title + '</div>' +
+            (postData.selftext ? '<div style="font-size:14px;color:#1D1C1D;margin-top:6px;white-space:pre-wrap;">' + S.parseCommentBody(postData.selftext, 'op') + '</div>' : '') +
+            opMediaHtml +
+          '</div>' +
+        '</div>';
       }
       
       const coms = d[1]?.data?.children || [];
